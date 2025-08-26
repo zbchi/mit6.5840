@@ -24,6 +24,14 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	return nil
 }
 
+func (c*Coordinator) RequestTask(args*Request,reply* RequestReply) error {
+	reply.TaskType=TaskMap
+	reply.File="pg-test.txt"
+	reply.TaskID=0
+	reply.NReduce=2
+	return nil
+}
+
 
 //
 // start a thread that listens for RPCs from worker.go
