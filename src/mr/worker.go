@@ -1,10 +1,15 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
-
+import (
+	"encoding/json"
+	"fmt"
+	"hash/fnv"
+	"io/ioutil"
+	"log"
+	"net/rpc"
+	"os"
+	"sort"
+)
 
 //
 // Map functions return a slice of KeyValue.
@@ -13,6 +18,13 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
+
+type ByKey []KeyValue
+
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
+
 
 //
 // use ihash(key) % NReduce to choose the reduce
@@ -28,13 +40,77 @@ func ihash(key string) int {
 //
 // main/mrworker.go calls this function.
 //
+
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	args:=Request{}
-	reply:=RequestReply{}
-	call("Coordinator.RequestTask",&args,&reply)
-	fmt.Printf("got task:%+v/n",reply)
+	for {
+	
+		args:=RequestArgs{}
+		reply:=RequestReply{}
+		call("Coordinator.RequestTask",&args,&reply)
+		if reply.TaskType==TaskMap{
+			file,_:=os.Open(reply.File)
+			defer file.Close()
+
+			content,_:=ioutil.ReadAll(file)
+
+			kva:=mapf(reply.File,string(content))
+			//sort.Sort(ByKey(kva))
+
+			for _,kv:=range kva{
+				reduceId:=ihash(kv.Key)%reply.NReduce
+				oname:=fmt.Sprintf("mr-%d-%d",reply.TaskID,reduceId)
+				ofile,_:=os.OpenFile(oname,os.O_APPEND|os.O_CREATE|os.O_WRONLY,0644)
+				enc:=json.NewEncoder(ofile)
+				enc.Encode(&kv)
+				ofile.Close()
+			}
+		}else if reply.TaskType==TaskReduce{
+			reduceId:=reply.TaskID
+			nMap:=reply.NMap
+
+			kva:=[]KeyValue{}
+
+			for m:=0;m<nMap;m++{
+				iname:=fmt.Sprintf("mr-%d-%d",m,reduceId)
+				file,_:=os.Open(iname)
+				dec:=json.NewDecoder(file)
+				for {
+					var kv KeyValue
+					dec.Decode(&kv)
+					kva=append(kva,kv)	
+				}
+				file.Close()
+			}
+
+			sort.Sort(ByKey(kva))
+
+			
+			oname:=fmt.Sprintf("mr-out-%d",reduceId)
+			ofile,_:=os.Create(oname)
+			defer ofile.Close()
+
+			i:=0
+			for i<len(kva){
+				j:=i+1
+				for j<len(kva) && kva[j].Key == kva[i].Key{
+					j++
+				}
+				values:=[]string{}
+				for k:=i;k<j;k++{
+					values=append(values,kva[k].Value)
+				}
+				output:=reducef(kva[i].Key,values)
+				fmt.Fprintf(ofile,"%v %v\n",kva[i].Key,output)
+				
+				i=j
+			}
+		}
+
+		//fmt.Printf("got task:%+v/n",reply)
+	}
+	
 	// Your worker implementation here.
 
 	// uncomment to send the Example RPC to the coordinator.

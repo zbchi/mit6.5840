@@ -32,7 +32,7 @@ const (
 
 )
 
-type Request struct {
+type RequestArgs struct {
 
 }
 
@@ -41,6 +41,7 @@ type RequestReply struct{
 	File string 
 	TaskID int
 	NReduce int
+	NMap int
 }
 
 // Cook up a unique-ish UNIX-domain socket name
