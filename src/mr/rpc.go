@@ -44,6 +44,15 @@ type RequestReply struct{
 	NMap int
 }
 
+type MapTask struct {
+	File string
+	Done bool
+}
+
+type ReduceTask struct {
+	Done bool
+}
+
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.
 // Can't use the current directory since
