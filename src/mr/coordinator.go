@@ -29,14 +29,14 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 }
 
 func (c *Coordinator) RequestTask(args *RequestArgs, reply *RequestReply) error {
-	fmt.Printf("allocate task\n")
+	//fmt.Printf("allocate task\n")
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	for i, task := range c.mapTasks {
 		if !task.Done {
-			fmt.Printf("map task%d\n", i)
+			//fmt.Printf("map task%d\n", i)
 			reply.TaskType = TaskMap
 			reply.File = task.File
 			reply.TaskID = i
@@ -47,7 +47,7 @@ func (c *Coordinator) RequestTask(args *RequestArgs, reply *RequestReply) error 
 	}
 
 	for i, task := range c.reduceTasks {
-		fmt.Printf("reduce tasks size:%d\n", len(c.reduceTasks))
+		//fmt.Printf("reduce tasks size:%d\n", len(c.reduceTasks))
 		if !task.Done {
 			fmt.Printf("reduce task%d\n", i)
 			reply.TaskType = TaskReduce

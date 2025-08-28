@@ -41,14 +41,17 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	for {
 
-		fmt.Printf("call\n")
+		//fmt.Printf("call\n")
 
 		args := RequestArgs{}
 		reply := RequestReply{}
-		call("Coordinator.RequestTask", &args, &reply)
-
+		is_called := call("Coordinator.RequestTask", &args, &reply)
+		if is_called == false {
+			fmt.Print("------------------------------")
+			break
+		}
 		if reply.TaskType == TaskMap {
-			fmt.Print("map task\n")
+			fmt.Printf("map task%d\n", reply.TaskID)
 			file, _ := os.Open(reply.File)
 			defer file.Close()
 
@@ -66,7 +69,7 @@ func Worker(mapf func(string, string) []KeyValue,
 				ofile.Close()
 			}
 		} else if reply.TaskType == TaskReduce {
-			fmt.Print("reduce task\n")
+			fmt.Printf("reduce task%d\n", reply.TaskID)
 			reduceId := reply.TaskID
 			nMap := reply.NMap
 
@@ -111,8 +114,6 @@ func Worker(mapf func(string, string) []KeyValue,
 
 				i = j
 			}
-		}else if reply.TaskType==Exit{
-			break
 		}
 
 	}
@@ -159,7 +160,8 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	sockname := coordinatorSock()
 	c, err := rpc.DialHTTP("unix", sockname)
 	if err != nil {
-		log.Fatal("dialing:", err)
+		log.Println("dialing:", err)
+		return false
 	}
 	defer c.Close()
 
