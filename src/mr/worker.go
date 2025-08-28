@@ -111,6 +111,8 @@ func Worker(mapf func(string, string) []KeyValue,
 
 				i = j
 			}
+		}else if reply.TaskType==Exit{
+			break
 		}
 
 	}

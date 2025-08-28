@@ -58,6 +58,7 @@ func (c *Coordinator) RequestTask(args *RequestArgs, reply *RequestReply) error 
 		}
 	}
 
+    reply.TaskType=Exit
 	return nil
 }
 
@@ -82,11 +83,19 @@ func (c *Coordinator) server() {
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
-	ret := false
-
-	// Your code here.
-
-	return ret
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, task := range c.mapTasks {
+		if !task.Done {
+			return false
+		}
+	}
+	for _, task := range c.reduceTasks {
+		if !task.Done {
+			return false
+		}
+	}
+	return true
 }
 
 // create a Coordinator.

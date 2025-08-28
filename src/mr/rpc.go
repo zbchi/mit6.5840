@@ -29,6 +29,7 @@ const (
 	TaskNone TaskType = iota
 	TaskMap
 	TaskReduce
+	Exit
 
 )
 
