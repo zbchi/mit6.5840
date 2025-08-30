@@ -10,6 +10,7 @@ import (
 	"net/rpc"
 	"os"
 	"sort"
+	"time"
 )
 
 // Map functions return a slice of KeyValue.
@@ -47,11 +48,12 @@ func Worker(mapf func(string, string) []KeyValue,
 		reply := RequestReply{}
 		is_called := call("Coordinator.RequestTask", &args, &reply)
 		if is_called == false {
-			fmt.Print("------------------------------")
+			//fmt.Print("------------------------------")
 			break
 		}
-		if reply.TaskType == TaskMap {
-			fmt.Printf("map task%d\n", reply.TaskID)
+		switch reply.TaskType {
+		case TaskMap:
+			//fmt.Printf("map task%d\n", reply.TaskID)
 			file, _ := os.Open(reply.File)
 			defer file.Close()
 
@@ -68,8 +70,8 @@ func Worker(mapf func(string, string) []KeyValue,
 				enc.Encode(&kv)
 				ofile.Close()
 			}
-		} else if reply.TaskType == TaskReduce {
-			fmt.Printf("reduce task%d\n", reply.TaskID)
+		case TaskReduce:
+			//fmt.Printf("reduce task%d\n", reply.TaskID)
 			reduceId := reply.TaskID
 			nMap := reply.NMap
 
@@ -87,12 +89,33 @@ func Worker(mapf func(string, string) []KeyValue,
 						}
 						log.Fatal(err)
 					}
+					/*if kv.Key == "AS" {
+						fmt.Println("Got AS from file:", iname, "Value:", kv.Value)
+					}*/
 					kva = append(kva, kv)
 				}
+
+				/*if m == 4 && reduceId == 1 {
+					sort.Sort(ByKey(kva))
+					for i, kv := range kva {
+						fmt.Printf("Key: %s, Value: %s\n", kv.Key, kv.Value)
+						if i > 100 {
+							break
+						}
+					}
+				}*/
+
 				file.Close()
 			}
 
 			sort.Sort(ByKey(kva))
+
+			/*for i, kv := range kva {
+				fmt.Printf("Key: %s, Value: %s\n", kv.Key, kv.Value)
+				if i > 100 {
+					break
+				}
+			}*/
 
 			oname := fmt.Sprintf("mr-out-%d", reduceId)
 			ofile, _ := os.Create(oname)
@@ -114,8 +137,18 @@ func Worker(mapf func(string, string) []KeyValue,
 
 				i = j
 			}
+
+		case Wait:
+			time.Sleep(500 * time.Millisecond)
+			continue
+
 		}
 
+		//Response
+		if reply.TaskType != Wait && reply.TaskType != Exit {
+			args = RequestArgs{reply.TaskType, reply.TaskID}
+			call("Coordinator.ResponseTask", &args, &reply)
+		}
 	}
 
 	// Your worker implementation here.

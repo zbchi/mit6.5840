@@ -1,7 +1,7 @@
 package mr
 
 import (
-	"fmt"
+	//"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -35,36 +35,50 @@ func (c *Coordinator) RequestTask(args *RequestArgs, reply *RequestReply) error 
 	defer c.mu.Unlock()
 
 	for i, task := range c.mapTasks {
-		if !task.Done {
+		if task.Status == UnSent {
 			//fmt.Printf("map task%d\n", i)
 			reply.TaskType = TaskMap
 			reply.File = task.File
 			reply.TaskID = i
 			reply.NReduce = c.nReduce
-			c.mapTasks[i].Done = true
+			c.mapTasks[i].Status = Doing
+			return nil
+		}
+	}
+
+	for _, task := range c.mapTasks {
+		if task.Status != Done {
+			reply.TaskType = Wait
 			return nil
 		}
 	}
 
 	for i, task := range c.reduceTasks {
 		//fmt.Printf("reduce tasks size:%d\n", len(c.reduceTasks))
-		if !task.Done {
-			fmt.Printf("reduce task%d\n", i)
+		if task.Status == UnSent {
+			//fmt.Printf("reduce task%d\n", i)
 			reply.TaskType = TaskReduce
 			reply.TaskID = i
 			reply.NMap = c.nMap
-			c.reduceTasks[i].Done = true
+			c.reduceTasks[i].Status = Doing
 			return nil
 		}
 	}
 
-    reply.TaskType=Exit
+	reply.TaskType = Exit
 	return nil
 }
 
-//func (c*Coordinator) ResponseTask() error{
-
-//}
+func (c *Coordinator) ResponseTask(args *RequestArgs, reply *RequestReply) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if args.TaskType == TaskMap {
+		c.mapTasks[args.TaskId].Status = Done
+	} else if args.TaskType == TaskReduce {
+		c.reduceTasks[args.TaskId].Status = Done
+	}
+	return nil
+}
 
 // start a thread that listens for RPCs from worker.go
 func (c *Coordinator) server() {
@@ -86,12 +100,12 @@ func (c *Coordinator) Done() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, task := range c.mapTasks {
-		if !task.Done {
+		if task.Status != Done {
 			return false
 		}
 	}
 	for _, task := range c.reduceTasks {
-		if !task.Done {
+		if task.Status != Done {
 			return false
 		}
 	}
@@ -107,8 +121,8 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c.mapTasks = make([]MapTask, len(files))
 	for i, file := range files {
 		c.mapTasks[i] = MapTask{
-			File: file,
-			Done: false,
+			File:   file,
+			Status: UnSent,
 		}
 	}
 
@@ -118,7 +132,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c.reduceTasks = make([]ReduceTask, nReduce)
 	for i := 0; i < nReduce; i++ {
 		c.reduceTasks[i] = ReduceTask{
-			Done: false,
+			Status: UnSent,
 		}
 	}
 
