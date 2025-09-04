@@ -40,6 +40,7 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
+	pid := os.Getpid()
 	for {
 
 		//fmt.Printf("call\n")
@@ -53,7 +54,7 @@ func Worker(mapf func(string, string) []KeyValue,
 		}
 		switch reply.TaskType {
 		case TaskMap:
-			//fmt.Printf("map task%d\n", reply.TaskID)
+			fmt.Printf("PID:%d map task%d\n", pid, reply.TaskID)
 			file, _ := os.Open(reply.File)
 			defer file.Close()
 
@@ -62,16 +63,33 @@ func Worker(mapf func(string, string) []KeyValue,
 			kva := mapf(reply.File, string(content))
 			//sort.Sort(ByKey(kva))
 
+			reduceKvs := make(map[int][]KeyValue)
 			for _, kv := range kva {
 				reduceId := ihash(kv.Key) % reply.NReduce
-				oname := fmt.Sprintf("mr-%d-%d", reply.TaskID, reduceId)
-				ofile, _ := os.OpenFile(oname, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-				enc := json.NewEncoder(ofile)
-				enc.Encode(&kv)
-				ofile.Close()
+				reduceKvs[reduceId] = append(reduceKvs[reduceId], kv)
 			}
+
+			for reduceId, kvs := range reduceKvs {
+				tmpFile, err := os.CreateTemp("", fmt.Sprintf("mr-%d-%d-*.tmp", reply.TaskID, reduceId))
+				if err != nil {
+					fmt.Println(err)
+					continue
+				}
+
+				enc := json.NewEncoder(tmpFile)
+				for _, kv := range kvs {
+					enc.Encode(&kv)
+				}
+
+				tmpFile.Close()
+
+				finalName := fmt.Sprintf("mr-%d-%d", reply.TaskID, reduceId)
+				os.Rename(tmpFile.Name(), finalName)
+
+			}
+
 		case TaskReduce:
-			//fmt.Printf("reduce task%d\n", reply.TaskID)
+			fmt.Printf("PID:%d reduce task%d\n", pid, reply.TaskID)
 			reduceId := reply.TaskID
 			nMap := reply.NMap
 
@@ -79,7 +97,14 @@ func Worker(mapf func(string, string) []KeyValue,
 
 			for m := 0; m < nMap; m++ {
 				iname := fmt.Sprintf("mr-%d-%d", m, reduceId)
-				file, _ := os.Open(iname)
+
+				file, err := os.Open(iname)
+				if err != nil {
+					//fmt.Println(err)
+					continue
+				}
+
+				fmt.Println(err)
 				dec := json.NewDecoder(file)
 				for {
 					var kv KeyValue
@@ -141,7 +166,6 @@ func Worker(mapf func(string, string) []KeyValue,
 		case Wait:
 			time.Sleep(500 * time.Millisecond)
 			continue
-
 		}
 
 		//Response
@@ -193,7 +217,7 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	sockname := coordinatorSock()
 	c, err := rpc.DialHTTP("unix", sockname)
 	if err != nil {
-		log.Println("dialing:", err)
+		//log.Println("dialing:", err)
 		return false
 	}
 	defer c.Close()

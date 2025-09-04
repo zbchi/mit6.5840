@@ -9,6 +9,7 @@ package mr
 import (
 	"os"
 	"strconv"
+	"time"
 )
 
 //
@@ -44,7 +45,7 @@ const (
 
 type RequestArgs struct {
 	TaskType TaskType
-	TaskId int
+	TaskId   int
 }
 
 type RequestReply struct {
@@ -58,10 +59,14 @@ type RequestReply struct {
 type MapTask struct {
 	File   string
 	Status TaskStatus
+
+	StartTime time.Time
 }
 
 type ReduceTask struct {
 	Status TaskStatus
+
+	StartTime time.Time
 }
 
 // Cook up a unique-ish UNIX-domain socket name

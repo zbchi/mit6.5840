@@ -2,12 +2,14 @@ package mr
 
 import (
 	//"fmt"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/rpc"
 	"os"
 	"sync"
+	"time"
 )
 
 type Coordinator struct {
@@ -28,6 +30,29 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	return nil
 }
 
+func (c *Coordinator) CheckTaskStatus() {
+	for {
+		time.Sleep(time.Second)
+		c.mu.Lock()
+		fmt.Printf("checkout\n")
+		for i, task := range c.mapTasks {
+			if task.Status == Doing && time.Since(task.StartTime) > 10*time.Second {
+				c.mapTasks[i].Status = UnSent
+				fmt.Printf("mapTask%d timeout,retry\n", i)
+			}
+		}
+
+		for i, task := range c.reduceTasks {
+			if task.Status == Doing && time.Since(task.StartTime) > 10*time.Second {
+				c.reduceTasks[i].Status = UnSent
+				fmt.Printf("reudceTask%d timeout,retry\n", i)
+			}
+		}
+
+		c.mu.Unlock()
+	}
+}
+
 func (c *Coordinator) RequestTask(args *RequestArgs, reply *RequestReply) error {
 	//fmt.Printf("allocate task\n")
 
@@ -42,6 +67,7 @@ func (c *Coordinator) RequestTask(args *RequestArgs, reply *RequestReply) error 
 			reply.TaskID = i
 			reply.NReduce = c.nReduce
 			c.mapTasks[i].Status = Doing
+			c.mapTasks[i].StartTime = time.Now()
 			return nil
 		}
 	}
@@ -61,6 +87,14 @@ func (c *Coordinator) RequestTask(args *RequestArgs, reply *RequestReply) error 
 			reply.TaskID = i
 			reply.NMap = c.nMap
 			c.reduceTasks[i].Status = Doing
+			c.reduceTasks[i].StartTime = time.Now()
+			return nil
+		}
+	}
+
+	for _, task := range c.reduceTasks {
+		if task.Status != Done {
+			reply.TaskType = Wait
 			return nil
 		}
 	}
@@ -137,5 +171,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	}
 
 	c.server()
+
+	go c.CheckTaskStatus()
 	return &c
 }
