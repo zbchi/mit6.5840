@@ -59,7 +59,7 @@ func (c *Coordinator) RequestTask(args *RequestArgs, reply *RequestReply) error 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for i, task := range c.mapTasks {
+	for i, task := range c.mapTasks {		
 		if task.Status == UnSent {
 			//fmt.Printf("map task%d\n", i)
 			reply.TaskType = TaskMap

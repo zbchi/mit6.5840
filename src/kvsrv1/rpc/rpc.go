@@ -25,7 +25,8 @@ type PutArgs struct {
 }
 
 type PutReply struct {
-	Err Err
+	Err     Err
+	Version Tversion
 }
 
 type GetArgs struct {
@@ -37,4 +38,3 @@ type GetReply struct {
 	Version Tversion
 	Err     Err
 }
-
