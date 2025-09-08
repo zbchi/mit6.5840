@@ -34,8 +34,14 @@ func (lk *Lock) Acquire() {
 		value, version, err := lk.ck.Get(lk.name)
 		fmt.Printf("[%s,%s] Acquire try %d, value: %s\n", lk.me, lk.name, i, value)
 		if err == rpc.ErrNoKey { // free lock
-			lk.ck.Put(lk.name, lk.me, 0)
-			fmt.Printf("[%s,%s] Acquire success (no key)\n", lk.me, lk.name)
+			err := lk.ck.Put(lk.name, lk.me, 0)
+			if err != rpc.OK {
+				fmt.Printf("[%s,%s] Acquire put failed: %v\n", lk.me, lk.name, err)
+			} else {
+				fmt.Printf("[%s,%s] Acquire success\n", lk.me, lk.name)
+				break
+			}
+		} else if value == lk.me { //lock is mine
 			break
 		} else if value == "" { // free lock
 			err := lk.ck.Put(lk.name, lk.me, version)
@@ -53,20 +59,24 @@ func (lk *Lock) Acquire() {
 }
 
 func (lk *Lock) Release() {
-	fmt.Printf("[%s,%s] Release start\n", lk.me, lk.name)
-	value, version, err := lk.ck.Get(lk.name)
-	if err == rpc.ErrNoKey {
-		fmt.Printf("[%s,%s] Release failed: ErrNoKey\n", lk.me, lk.name)
-		return
-	} else if value != lk.me {
-		fmt.Printf("[%s,%s] Release failed: not owner\n", lk.me, lk.name)
-		return
-	} else if value == lk.me {
-		err := lk.ck.Put(lk.name, "", version)
-		if err != rpc.OK {
-			fmt.Printf("[%s,%s] Release put failed: %v\n", lk.me, lk.name, err)
-		} else {
-			fmt.Printf("[%s,%s] Release success\n", lk.me, lk.name)
+	for {
+		value, version, err := lk.ck.Get(lk.name)
+		fmt.Printf("[%s,%s] Release start,value :%s\n", lk.me, lk.name, value)
+		if err == rpc.ErrNoKey {
+			fmt.Printf("[%s,%s] Release failed: ErrNoKey\n", lk.me, lk.name)
+			return
+		} else if value != lk.me {
+			fmt.Printf("[%s,%s] Release failed: not owner\n", lk.me, lk.name)
+			return
+		} else if value == lk.me {
+			err := lk.ck.Put(lk.name, "", version)
+			if err != rpc.OK {
+				fmt.Printf("[%s,%s] Release put failed: %v\n", lk.me, lk.name, err)
+			} else {
+				fmt.Printf("[%s,%s] Release success\n", lk.me, lk.name)
+				return
+			}
 		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
