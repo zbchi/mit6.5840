@@ -34,6 +34,8 @@ type Raft struct {
 	VoteCount   int
 
 	lastHeartBeat time.Time
+
+	applyCh chan raftapi.ApplyMsg
 	// Your data here (3A, 3B, 3C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
@@ -241,6 +243,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	// Your code here (3B).
 
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	term = rf.CurrentTerm
+	isLeader = rf.State == Leader
+
 	return index, term, isLeader
 }
 
@@ -265,10 +272,12 @@ func (rf *Raft) killed() bool {
 
 func (rf *Raft) startElection() {
 	//成为候选人，投票给自己
+	rf.mu.Lock()
 	rf.State = Candidate
 	rf.VoteCount = 1
 	rf.CurrentTerm++
 	slog.Info("start election", slog.Int("node", rf.me), slog.Int("term", rf.CurrentTerm))
+	rf.mu.Unlock()
 	//向所有节点发送投票请求
 	for i := range rf.peers {
 		if i == rf.me {
@@ -344,6 +353,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here (3A, 3B, 3C).
 	rf.CurrentTerm = 0
 	rf.State = Follower
+
+	rf.applyCh = applyCh
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
