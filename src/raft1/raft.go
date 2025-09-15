@@ -35,11 +35,23 @@ type Raft struct {
 
 	lastHeartBeat time.Time
 
-	applyCh chan raftapi.ApplyMsg
+	log              []LogEntry
+	committedIndex   int
+	nextIndex        []int //每个follower单独维护
+	matchIndex       []int //已经append到follower的索引
+	lastAppliedIndex int
+	applyCh          chan raftapi.ApplyMsg
+
 	// Your data here (3A, 3B, 3C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
+}
+
+type LogEntry struct {
+	Term    int
+	Index   int
+	Command interface{}
 }
 
 type State int
@@ -181,12 +193,16 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 }
 
 type AppendEntriesArgs struct {
-	Time   time.Time
-	Term   int
-	Leader int
+	Time           time.Time
+	Term           int
+	Leader         int
+	AppendLog      []LogEntry
+	CommittedIndex int
+	sentIndex      int
 }
 
 type AppendEntriesReply struct {
+	IsSuccess bool
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -196,7 +212,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.State = Follower
 		rf.CurrentTerm = args.Term
 		rf.lastHeartBeat = args.Time
+		rf.log = append(rf.log, args.AppendLog...)
+		rf.committedIndex = args.CommittedIndex
+		reply.IsSuccess = true
 		slog.Info("heartBeat update", slog.Int("node", rf.me), slog.Int("leader", args.Leader), slog.Int("term", rf.CurrentTerm))
+
 	}
 }
 
@@ -208,19 +228,78 @@ func (rf *Raft) heatBeatCheck() {
 			}
 
 			go func(server int) {
+				rf.mu.Lock()
 				args := AppendEntriesArgs{
-					Time:   time.Now(),
-					Term:   rf.CurrentTerm,
-					Leader: rf.me,
+					Time:           time.Now(),
+					Term:           rf.CurrentTerm,
+					Leader:         rf.me,
+					AppendLog:      rf.log[rf.nextIndex[server]:],
+					CommittedIndex: rf.committedIndex,
+					sentIndex:      len(rf.log) - 1,
 				}
 				reply := AppendEntriesReply{}
-				ok := rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
-				if ok {
+				isLeader := rf.State == Leader
+				rf.mu.Unlock()
 
+				if isLeader {
+					ok := rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
+					if ok && reply.IsSuccess {
+						rf.mu.Lock()
+						defer rf.mu.Unlock()
+						rf.matchIndex[server] = args.sentIndex
+						rf.nextIndex[server] = args.sentIndex + 1
+					}
 				}
 			}(i)
 		}
+
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func (rf *Raft) updateCommittedIndex() { //检测commitIndex更新
+	for !rf.killed() {
+		rf.mu.Lock()
+		isLeader := rf.State == Leader
+		if !isLeader { //非Leader睡觉等带成为Leader
+			rf.mu.Unlock()
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		for N := rf.committedIndex + 1; N <= len(rf.log)-1; N++ {
+			count := 1
+			for match := range rf.matchIndex {
+				if match >= N {
+					count++
+				}
+			}
+			if count > len(rf.peers)/2 && rf.log[N].Term == rf.CurrentTerm {
+				rf.committedIndex = N
+			}
+		}
+		rf.mu.Unlock()
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func (rf *Raft) applyLog() {
+	for !rf.killed() {
+		rf.mu.Lock()
+		var msgs []raftapi.ApplyMsg
+		for rf.lastAppliedIndex <= rf.committedIndex {
+			rf.lastAppliedIndex++
+			msgs = append(msgs, raftapi.ApplyMsg{
+				CommandValid: true,
+				Command:      rf.log[rf.lastAppliedIndex].Command,
+				CommandIndex: rf.lastAppliedIndex,
+			})
+		}
+
+		rf.mu.Unlock()
+
+		for _, msg := range msgs {
+			rf.applyCh <- msg
+		}
 	}
 }
 
@@ -247,6 +326,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	defer rf.mu.Unlock()
 	term = rf.CurrentTerm
 	isLeader = rf.State == Leader
+	rf.log = append(rf.log,
+		LogEntry{
+			Term:    rf.CurrentTerm,
+			Index:   len(rf.log),
+			Command: command,
+		})
 
 	return index, term, isLeader
 }
@@ -355,12 +440,17 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.State = Follower
 
 	rf.applyCh = applyCh
-
+	rf.committedIndex = 0
+	rf.nextIndex = make([]int, len(rf.peers))
+	rf.matchIndex = make([]int, len(rf.peers))
+	rf.lastAppliedIndex = 0
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
+
+	go rf.updateCommittedIndex()
 
 	return rf
 }
