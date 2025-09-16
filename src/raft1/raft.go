@@ -136,7 +136,6 @@ type RequestVoteArgs struct {
 	// Your data here (3A, 3B).
 	CandidateId int
 	CurrentTerm int
-	Time        time.Time
 }
 
 // example RequestVote RPC reply structure.
@@ -153,9 +152,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 	if rf.CurrentTerm < args.CurrentTerm {
 		reply.IsVote = true
-		rf.lastHeartBeat = args.Time
+		rf.lastHeartBeat = time.Now()
 		rf.CurrentTerm = args.CurrentTerm
-		slog.Info("vote for", slog.Int("node", rf.me), slog.Int("term", rf.CurrentTerm))
+		//slog.Info("vote for", slog.Int("node", rf.me), slog.Int("term", rf.CurrentTerm))
 	}
 
 }
@@ -193,12 +192,11 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 }
 
 type AppendEntriesArgs struct {
-	Time           time.Time
 	Term           int
 	Leader         int
 	AppendLog      []LogEntry
 	CommittedIndex int
-	sentIndex      int
+	SentIndex      int
 }
 
 type AppendEntriesReply struct {
@@ -211,11 +209,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if rf.CurrentTerm <= args.Term {
 		rf.State = Follower
 		rf.CurrentTerm = args.Term
-		rf.lastHeartBeat = args.Time
+		rf.lastHeartBeat = time.Now()
 		rf.log = append(rf.log, args.AppendLog...)
 		rf.committedIndex = args.CommittedIndex
+		slog.Info("update committedIndex", slog.Int("node", rf.me), slog.Int("value", rf.committedIndex))
 		reply.IsSuccess = true
-		slog.Info("heartBeat update", slog.Int("node", rf.me), slog.Int("leader", args.Leader), slog.Int("term", rf.CurrentTerm))
+		//slog.Info("heartBeat update", slog.Int("node", rf.me), slog.Int("leader", args.Leader), slog.Int("term", rf.CurrentTerm))
 
 	}
 }
@@ -229,25 +228,40 @@ func (rf *Raft) heatBeatCheck() {
 
 			go func(server int) {
 				rf.mu.Lock()
-				args := AppendEntriesArgs{
-					Time:           time.Now(),
-					Term:           rf.CurrentTerm,
-					Leader:         rf.me,
-					AppendLog:      rf.log[rf.nextIndex[server]:],
-					CommittedIndex: rf.committedIndex,
-					sentIndex:      len(rf.log) - 1,
-				}
-				reply := AppendEntriesReply{}
 				isLeader := rf.State == Leader
-				rf.mu.Unlock()
-
 				if isLeader {
+					//检测commitIndex更新
+					for N := rf.committedIndex + 1; N <= len(rf.log)-1; N++ {
+						count := 1
+						for _, match := range rf.matchIndex {
+							if match >= N {
+								count++
+							}
+						}
+						if count > len(rf.peers)/2 && rf.log[N].Term == rf.CurrentTerm {
+							rf.committedIndex = N
+							slog.Info("update committedIndex", slog.Int("value", rf.committedIndex))
+						}
+					}
+
+					args := AppendEntriesArgs{
+						Term:           rf.CurrentTerm,
+						Leader:         rf.me,
+						AppendLog:      rf.log[rf.nextIndex[server]:],
+						CommittedIndex: rf.committedIndex,
+						SentIndex:      len(rf.log) - 1,
+					}
+					reply := AppendEntriesReply{}
+					rf.mu.Unlock()
+
 					ok := rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
+					slog.Info("send log", slog.Int("from", rf.nextIndex[server]), slog.Int("to", args.SentIndex))
 					if ok && reply.IsSuccess {
 						rf.mu.Lock()
 						defer rf.mu.Unlock()
-						rf.matchIndex[server] = args.sentIndex
-						rf.nextIndex[server] = args.sentIndex + 1
+						rf.matchIndex[server] = args.SentIndex
+						rf.nextIndex[server] = args.SentIndex + 1
+
 					}
 				}
 			}(i)
@@ -257,49 +271,26 @@ func (rf *Raft) heatBeatCheck() {
 	}
 }
 
-func (rf *Raft) updateCommittedIndex() { //检测commitIndex更新
-	for !rf.killed() {
-		rf.mu.Lock()
-		isLeader := rf.State == Leader
-		if !isLeader { //非Leader睡觉等带成为Leader
-			rf.mu.Unlock()
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
-		for N := rf.committedIndex + 1; N <= len(rf.log)-1; N++ {
-			count := 1
-			for match := range rf.matchIndex {
-				if match >= N {
-					count++
-				}
-			}
-			if count > len(rf.peers)/2 && rf.log[N].Term == rf.CurrentTerm {
-				rf.committedIndex = N
-			}
-		}
-		rf.mu.Unlock()
-		time.Sleep(100 * time.Millisecond)
-	}
-}
-
 func (rf *Raft) applyLog() {
 	for !rf.killed() {
 		rf.mu.Lock()
 		var msgs []raftapi.ApplyMsg
-		for rf.lastAppliedIndex <= rf.committedIndex {
+		for rf.lastAppliedIndex < rf.committedIndex {
 			rf.lastAppliedIndex++
 			msgs = append(msgs, raftapi.ApplyMsg{
 				CommandValid: true,
 				Command:      rf.log[rf.lastAppliedIndex].Command,
-				CommandIndex: rf.lastAppliedIndex,
+				CommandIndex: rf.lastAppliedIndex + 1,
 			})
 		}
 
 		rf.mu.Unlock()
 
 		for _, msg := range msgs {
+			slog.Info("apply log", slog.Int("node", rf.me), slog.Int("index", msg.CommandIndex))
 			rf.applyCh <- msg
 		}
+		time.Sleep(1 * time.Millisecond)
 	}
 }
 
@@ -318,22 +309,26 @@ func (rf *Raft) applyLog() {
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 	term := -1
-	isLeader := true
+	isLeader := false
 
 	// Your code here (3B).
+	slog.Info("start")
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	term = rf.CurrentTerm
 	isLeader = rf.State == Leader
-	rf.log = append(rf.log,
-		LogEntry{
-			Term:    rf.CurrentTerm,
-			Index:   len(rf.log),
-			Command: command,
-		})
-
-	return index, term, isLeader
+	if isLeader {
+		index = len(rf.log)
+		rf.log = append(rf.log,
+			LogEntry{
+				Term:    rf.CurrentTerm,
+				Index:   index,
+				Command: command,
+			})
+		slog.Info("append a log", slog.Int("index", index))
+	}
+	return index + 1, term, isLeader
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -361,7 +356,7 @@ func (rf *Raft) startElection() {
 	rf.State = Candidate
 	rf.VoteCount = 1
 	rf.CurrentTerm++
-	slog.Info("start election", slog.Int("node", rf.me), slog.Int("term", rf.CurrentTerm))
+	//slog.Info("start election", slog.Int("node", rf.me), slog.Int("term", rf.CurrentTerm))
 	rf.mu.Unlock()
 	//向所有节点发送投票请求
 	for i := range rf.peers {
@@ -381,7 +376,7 @@ func (rf *Raft) startElection() {
 					rf.mu.Lock()
 					defer rf.mu.Unlock()
 					rf.VoteCount++
-					slog.Info("got vote", slog.Int("node", rf.me), slog.Int("votes", rf.VoteCount), slog.Int("term", rf.CurrentTerm))
+					//slog.Info("got vote", slog.Int("node", rf.me), slog.Int("votes", rf.VoteCount), slog.Int("term", rf.CurrentTerm))
 					if rf.VoteCount > len(rf.peers)/2 && rf.State == Candidate {
 						slog.Info("become leader", slog.Int("node", rf.me), slog.Int("votes", rf.VoteCount), slog.Int("need votes", len(rf.peers)/2), slog.Int("term", rf.CurrentTerm))
 						rf.State = Leader //票数过半成为leader
@@ -440,17 +435,21 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.State = Follower
 
 	rf.applyCh = applyCh
-	rf.committedIndex = 0
+	rf.committedIndex = -1
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
-	rf.lastAppliedIndex = 0
+	for i := range rf.matchIndex {
+		rf.matchIndex[i] = -1
+	}
+	rf.lastAppliedIndex = -1
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
 
-	go rf.updateCommittedIndex()
+	//go rf.updateCommittedIndex()
+	go rf.applyLog()
 
 	return rf
 }
