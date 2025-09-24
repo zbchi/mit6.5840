@@ -71,9 +71,9 @@ func (rf *Raft) GetState() (int, bool) {
 	var isleader bool
 	// Your code here (3A).
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	term = rf.CurrentTerm
 	isleader = rf.State == Leader
+	rf.mu.Unlock()
 	return term, isleader
 }
 
@@ -147,13 +147,13 @@ type RequestVoteArgs struct {
 type RequestVoteReply struct {
 	// Your data here (3A).
 	IsVote bool
+	Term   int
 }
 
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 
 	if args.CurrentTerm > rf.CurrentTerm {
 		rf.CurrentTerm = args.CurrentTerm
@@ -161,7 +161,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.VotedFor = -1
 	}
 
-	if rf.CurrentTerm > args.CurrentTerm || rf.VotedFor != -1 {
+	if rf.CurrentTerm > args.CurrentTerm || (rf.VotedFor != -1 && rf.VotedFor != args.CandidateId) {
 		reply.IsVote = false
 	} else if args.LastLogTerm > rf.lastLogTerm() {
 		reply.IsVote = true
@@ -176,12 +176,15 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	//rf.lastHeartBeat = time.Now()
 
+	reply.Term = rf.CurrentTerm
 	if reply.IsVote {
 		rf.VotedFor = args.CandidateId
+		// 刷新选举超时，避免多个候选人持续竞争
+		rf.lastHeartBeat = time.Now()
 		//rf.CurrentTerm = args.CurrentTerm
 	}
 	//slog.Info("vote for", slog.Int("node", rf.me), slog.Int("term", rf.CurrentTerm))
-
+	rf.mu.Unlock()
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -222,8 +225,6 @@ type AppendEntriesArgs struct {
 	Entries      []LogEntry
 	LeaderCommit int
 
-	SentIndex   int
-	FromIndex   int
 	PreLogIndex int
 	PreLogTerm  int
 }
@@ -236,24 +237,28 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	rf.lastHeartBeat = time.Now()
-	slog.Info("Term", slog.Int("leaderTerm", args.Term), slog.Int("myTerm", rf.CurrentTerm))
+	slog.Info("Term", slog.Int("leaderTerm", args.Term), slog.Int("myTerm", rf.CurrentTerm), slog.Int("me", rf.me))
 	if rf.CurrentTerm <= args.Term {
 		rf.State = Follower
 		rf.CurrentTerm = args.Term
 		rf.commitIndex = min(args.LeaderCommit, len(rf.log)-1)
 
-		if args.PreLogIndex != len(rf.log)-1 {
+		if args.PreLogIndex >= len(rf.log) {
 			reply.IsSuccess = false
-			slog.Info("nextIndex not len", slog.Int("PreLogIndex", args.PreLogIndex), slog.Int("expected", len(rf.log)-1))
+			slog.Info("nextIndex not in", slog.Int("PreLogIndex", args.PreLogIndex), slog.Int("expected", len(rf.log)-1))
 			return
 		} else if args.PreLogTerm != rf.log[args.PreLogIndex].Term {
 			reply.IsSuccess = false
+			rf.log = rf.log[:args.PreLogIndex] //term不匹配删除index之后的日志
 			slog.Info("nextIndex not term", slog.Int("PreLogIndex", args.PreLogIndex), slog.Int("PreLogTerm", args.PreLogTerm), slog.Int("myLastLogTerm", rf.log[args.PreLogIndex].Term))
 			return
 		}
-		rf.log = rf.log[:args.PreLogIndex+1]
-		rf.log = append(rf.log, args.Entries...)
-		slog.Info("node append log")
+
+		if len(args.Entries) > 0 {
+			rf.log = rf.log[:args.PreLogIndex+1]
+			rf.log = append(rf.log, args.Entries...)
+			slog.Info("node append log")
+		}
 		//slog.Info("update committedIndex", slog.Int("node", rf.me), slog.Int("value", rf.commitIndex))
 		reply.IsSuccess = true
 		//slog.Info("heartBeat update", slog.Int("node", rf.me), slog.Int("leader", args.Leader), slog.Int("term", rf.CurrentTerm))
@@ -262,7 +267,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 }
 
 func (rf *Raft) heatBeatCheck() {
-	for rf.State == Leader {
+	for !rf.killed() && rf.State == Leader {
 		for i := range rf.peers {
 			if i == rf.me {
 				continue
@@ -286,38 +291,49 @@ func (rf *Raft) heatBeatCheck() {
 						}
 					}
 
-					slog.Info("send log", slog.Int("nextIndex", rf.nextIndex[server]), slog.Int("node", server), slog.Int("me", rf.me))
+					//slog.Info("send log", slog.Int("nextIndex", rf.nextIndex[server]), slog.Int("node", server),
+					//	slog.Int("me", rf.me), slog.Int("myterm", rf.CurrentTerm))
+					sentIndex := len(rf.log) - 1
 					fromIndex := rf.nextIndex[server]
 					preLogIndex := fromIndex - 1
 					preLogTerm := rf.log[preLogIndex].Term
 
+					entries := rf.log[fromIndex:]
 					args := AppendEntriesArgs{
 						Term:         rf.CurrentTerm,
 						Leader:       rf.me,
-						Entries:      rf.log[rf.nextIndex[server]:],
+						Entries:      entries,
 						LeaderCommit: rf.commitIndex,
-						SentIndex:    len(rf.log) - 1,
-						FromIndex:    rf.nextIndex[server],
-						PreLogIndex:  preLogIndex,
-						PreLogTerm:   preLogTerm,
+						//SentIndex:    len(rf.log) - 1,
+						//FromIndex:    rf.nextIndex[server],
+						PreLogIndex: preLogIndex,
+						PreLogTerm:  preLogTerm,
 					}
-					reply := AppendEntriesReply{}
-					slog.Info("send log", slog.Int("from", args.FromIndex), slog.Int("to", args.SentIndex), slog.Int("node", server), slog.Int("me", rf.me))
 					rf.mu.Unlock()
+					reply := AppendEntriesReply{}
+
+					slog.Info("send log", slog.Int("from", fromIndex), slog.Int("to", sentIndex),
+						slog.Int("node", server), slog.Int("me", rf.me), slog.Int("myterm", rf.CurrentTerm), slog.Int("logsize", len(rf.log)))
 
 					ok := rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
 					rf.mu.Lock()
-					defer rf.mu.Unlock()
 					if ok && reply.IsSuccess {
-						rf.matchIndex[server] = args.SentIndex
-						rf.nextIndex[server] = args.SentIndex + 1
-						//slog.Info("send log ok")
+						// 只有确实发送了 entries 才推进 nextIndex/matchIndex
+						if len(entries) > 0 {
+							advancedTo := preLogIndex + len(entries)
+							rf.matchIndex[server] = advancedTo
+							rf.nextIndex[server] = advancedTo + 1
+							slog.Info("send log ok", slog.Int("leader", rf.me), slog.Int("follower", server))
+						}
 					} else if ok && !reply.IsSuccess {
 						if rf.nextIndex[server] != 1 {
 							rf.nextIndex[server]--
 						}
 						slog.Warn("send log failed", slog.Int("node", server), slog.Int("me", rf.me))
+					} else if !ok {
+						slog.Warn("rpc timeout", slog.Int("leader", rf.me), slog.Int("follower", server))
 					}
+					rf.mu.Unlock()
 				}
 			}(i)
 		}
@@ -370,7 +386,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	slog.Info("start")
 
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	term = rf.CurrentTerm
 	isLeader = rf.State == Leader
 	if isLeader {
@@ -383,6 +398,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			})
 		slog.Info("append a log", slog.Int("index", index), slog.Int("logsize", len(rf.log)))
 	}
+	rf.mu.Unlock()
 	return index, term, isLeader
 }
 
@@ -410,6 +426,7 @@ func (rf *Raft) startElection() {
 	rf.mu.Lock()
 	rf.State = Candidate
 	rf.VoteCount = 1
+	rf.VotedFor = rf.me
 	rf.CurrentTerm++
 	slog.Info("start election", slog.Int("me", rf.me))
 	//slog.Info("start election", slog.Int("node", rf.me), slog.Int("term", rf.CurrentTerm))
@@ -421,6 +438,7 @@ func (rf *Raft) startElection() {
 		}
 
 		go func(server int) { //用routine防止rpc阻塞节点
+			rf.mu.Lock()
 			args := RequestVoteArgs{
 				CandidateId:  rf.me,
 				CurrentTerm:  rf.CurrentTerm,
@@ -428,11 +446,19 @@ func (rf *Raft) startElection() {
 				LastLogTerm:  rf.lastLogTerm(),
 			}
 			reply := RequestVoteReply{}
+			rf.mu.Unlock()
+
 			ok := rf.sendRequestVote(server, &args, &reply)
+
+			rf.mu.Lock()
 			if ok {
+				if reply.Term > rf.CurrentTerm {
+					rf.State = Follower
+					rf.CurrentTerm = reply.Term
+					rf.mu.Unlock()
+					return
+				}
 				if reply.IsVote {
-					rf.mu.Lock()
-					defer rf.mu.Unlock()
 					rf.VoteCount++
 					//slog.Info("got vote", slog.Int("node", rf.me), slog.Int("votes", rf.VoteCount), slog.Int("term", rf.CurrentTerm))
 					if rf.VoteCount > len(rf.peers)/2 && rf.State == Candidate {
@@ -450,6 +476,7 @@ func (rf *Raft) startElection() {
 
 				}
 			}
+			rf.mu.Unlock()
 		}(i)
 
 	}
@@ -501,6 +528,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here (3A, 3B, 3C).
 	rf.CurrentTerm = 0
 	rf.State = Follower
+	rf.VotedFor = -1
 
 	rf.applyCh = applyCh
 	rf.commitIndex = -1

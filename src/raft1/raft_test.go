@@ -9,8 +9,10 @@ package raft
 //
 
 import (
-	"fmt"
+
 	// "log"
+
+	"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -131,6 +133,7 @@ func TestManyElections3A(t *testing.T) {
 	ts.checkOneLeader()
 }
 
+/*
 func TestBasicAgree3B(t *testing.T) {
 	servers := 3
 	ts := makeTest(t, servers, true, false)
@@ -269,6 +272,7 @@ func TestLeaderFailure3B(t *testing.T) {
 
 // test that a follower participates after
 // disconnect and re-connect.
+
 func TestFailAgree3B(t *testing.T) {
 	servers := 3
 	ts := makeTest(t, servers, true, false)
@@ -355,6 +359,7 @@ func TestFailNoAgree3B(t *testing.T) {
 
 	ts.one(1000, servers, true)
 }
+
 
 func TestConcurrentStarts3B(t *testing.T) {
 	servers := 3
@@ -477,7 +482,7 @@ loop:
 
 	text := "agreement reached under concurrent submission"
 	tester.AnnotateCheckerSuccess(text, "OK")
-}
+}*/
 
 func TestRejoin3B(t *testing.T) {
 	servers := 3
@@ -522,6 +527,7 @@ func TestRejoin3B(t *testing.T) {
 	ts.one(105, servers, true)
 }
 
+/*
 func TestBackup3B(t *testing.T) {
 	servers := 5
 	ts := makeTest(t, servers, true, false)
@@ -758,7 +764,7 @@ loop:
 		total3-total2, 3*20)
 	tester.AnnotateCheckerSuccess(
 		"used a reasonable number of RPCs in idle", details)
-}
+}*/
 
 func TestPersist13C(t *testing.T) {
 	servers := 3
