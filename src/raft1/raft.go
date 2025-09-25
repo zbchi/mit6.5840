@@ -160,6 +160,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.State = Follower
 		rf.VotedFor = -1
 	}
+	reply.Term = rf.CurrentTerm
 
 	if rf.CurrentTerm > args.CurrentTerm || (rf.VotedFor != -1 && rf.VotedFor != args.CandidateId) {
 		reply.IsVote = false
@@ -171,12 +172,15 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.IsVote = false
 	}
 
-	slog.Info("vote for", slog.Int("candidate", args.CandidateId), slog.Int("me", rf.me), slog.Int("candidate term",
-		args.CurrentTerm), slog.Int("my term", rf.CurrentTerm), slog.Bool("isVote", reply.IsVote))
+	slog.Info("election: vote",
+		slog.Int("candidate", args.CandidateId),
+		slog.Int("me", rf.me),
+		slog.Int("candidate_term", args.CurrentTerm),
+		slog.Int("my_term", rf.CurrentTerm),
+		slog.Bool("granted", reply.IsVote))
 
 	//rf.lastHeartBeat = time.Now()
 
-	reply.Term = rf.CurrentTerm
 	if reply.IsVote {
 		rf.VotedFor = args.CandidateId
 		// 刷新选举超时，避免多个候选人持续竞争
@@ -230,27 +234,46 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	IsSuccess bool
+	IsSuccess     bool
+	Term          int
+	ConflictTerm  int
+	ConflictIndex int
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	rf.lastHeartBeat = time.Now()
-	slog.Info("Term", slog.Int("leaderTerm", args.Term), slog.Int("myTerm", rf.CurrentTerm), slog.Int("me", rf.me))
-	if rf.CurrentTerm <= args.Term {
+	reply.Term = rf.CurrentTerm
+	//slog.Info("Term", slog.Int("leaderTerm", args.Term), slog.Int("myTerm", rf.CurrentTerm), slog.Int("me", rf.me))
+
+	if args.Term > rf.CurrentTerm {
+		rf.CurrentTerm = args.Term
+		rf.VotedFor = -1
+	}
+
+	if args.Term >= rf.CurrentTerm {
 		rf.State = Follower
 		rf.CurrentTerm = args.Term
 		rf.commitIndex = min(args.LeaderCommit, len(rf.log)-1)
 
-		if args.PreLogIndex >= len(rf.log) {
+		if args.PreLogIndex >= len(rf.log) { //节点不包含preLog
 			reply.IsSuccess = false
 			slog.Info("nextIndex not in", slog.Int("PreLogIndex", args.PreLogIndex), slog.Int("expected", len(rf.log)-1))
 			return
-		} else if args.PreLogTerm != rf.log[args.PreLogIndex].Term {
+		}
+		if args.PreLogTerm != rf.log[args.PreLogIndex].Term { //prelog Term不匹配，快速回退
 			reply.IsSuccess = false
-			rf.log = rf.log[:args.PreLogIndex] //term不匹配删除index之后的日志
-			slog.Info("nextIndex not term", slog.Int("PreLogIndex", args.PreLogIndex), slog.Int("PreLogTerm", args.PreLogTerm), slog.Int("myLastLogTerm", rf.log[args.PreLogIndex].Term))
+			reply.ConflictTerm = rf.log[args.PreLogIndex].Term
+			for i := args.PreLogIndex; i >= 0; i-- {
+				if rf.log[i].Term != reply.ConflictTerm {
+					reply.ConflictIndex = i + 1
+					break
+				}
+			}
+			rf.log = rf.log[:reply.ConflictIndex] //term不匹配删除index之后的日志
+
+			//slog.Info("nextIndex not term", slog.Int("PreLogIndex", args.PreLogIndex), slog.Int("PreLogTerm", args.PreLogTerm), slog.Int("myLastLogTerm", rf.log[args.PreLogIndex].Term))
 			return
 		}
 
@@ -259,7 +282,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.log = append(rf.log, args.Entries...)
 			slog.Info("node append log")
 		}
-		//slog.Info("update committedIndex", slog.Int("node", rf.me), slog.Int("value", rf.commitIndex))
+		slog.Info("update committedIndex", slog.Int("node", rf.me), slog.Int("value", rf.commitIndex))
 		reply.IsSuccess = true
 		//slog.Info("heartBeat update", slog.Int("node", rf.me), slog.Int("leader", args.Leader), slog.Int("term", rf.CurrentTerm))
 
@@ -287,7 +310,7 @@ func (rf *Raft) heatBeatCheck() {
 						}
 						if count > len(rf.peers)/2 && rf.log[N].Term == rf.CurrentTerm {
 							rf.commitIndex = N
-							slog.Info("update committedIndex", slog.Int("value", rf.commitIndex))
+							slog.Info("update committedIndex", slog.Int("node", rf.me), slog.Int("value", rf.commitIndex))
 						}
 					}
 
@@ -310,26 +333,54 @@ func (rf *Raft) heatBeatCheck() {
 						PreLogTerm:  preLogTerm,
 					}
 					rf.mu.Unlock()
-					reply := AppendEntriesReply{}
+					reply := AppendEntriesReply{
+						ConflictTerm:  -1,
+						ConflictIndex: -1,
+					}
 
 					slog.Info("send log", slog.Int("from", fromIndex), slog.Int("to", sentIndex),
 						slog.Int("node", server), slog.Int("me", rf.me), slog.Int("myterm", rf.CurrentTerm), slog.Int("logsize", len(rf.log)))
 
 					ok := rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
 					rf.mu.Lock()
-					if ok && reply.IsSuccess {
-						// 只有确实发送了 entries 才推进 nextIndex/matchIndex
-						if len(entries) > 0 {
-							advancedTo := preLogIndex + len(entries)
-							rf.matchIndex[server] = advancedTo
-							rf.nextIndex[server] = advancedTo + 1
+					if ok {
+						if reply.Term > rf.CurrentTerm {
+							rf.CurrentTerm = reply.Term
+							rf.State = Follower
+							rf.VotedFor = -1
+							rf.mu.Unlock()
+							return
+						}
+						if reply.IsSuccess {
+							// 只有确实发送了 entries 才推进 nextIndex/matchIndex
 							slog.Info("send log ok", slog.Int("leader", rf.me), slog.Int("follower", server))
+							if len(entries) > 0 {
+								advancedTo := preLogIndex + len(entries)
+								rf.matchIndex[server] = advancedTo
+								rf.nextIndex[server] = advancedTo + 1
+							}
 						}
-					} else if ok && !reply.IsSuccess {
-						if rf.nextIndex[server] != 1 {
-							rf.nextIndex[server]--
+						if !reply.IsSuccess && reply.ConflictTerm != -1 { //有冲突任期
+							//leader有冲突任期
+							found := false
+							for i, logEntry := range rf.log {
+								if logEntry.Term == reply.ConflictTerm {
+									rf.nextIndex[server] = i + 1
+									found = true
+									break
+								}
+							}
+							//没找到直接回退
+							if !found {
+								rf.nextIndex[server] = reply.ConflictIndex
+							}
+
+						} else if !reply.IsSuccess { //无冲突任期
+							if rf.nextIndex[server] != 1 {
+								rf.nextIndex[server]--
+							}
+							slog.Warn("send log failed", slog.Int("node", server), slog.Int("me", rf.me))
 						}
-						slog.Warn("send log failed", slog.Int("node", server), slog.Int("me", rf.me))
 					} else if !ok {
 						slog.Warn("rpc timeout", slog.Int("leader", rf.me), slog.Int("follower", server))
 					}
@@ -346,7 +397,12 @@ func (rf *Raft) applyLog() {
 	for !rf.killed() {
 		rf.mu.Lock()
 		var msgs []raftapi.ApplyMsg
-		for rf.lastAppliedIndex < rf.commitIndex {
+		// 只能应用到本地已存在的日志下标，避免跳过未到达的条目
+		applyUpto := rf.commitIndex
+		if maxLocal := len(rf.log) - 1; applyUpto > maxLocal {
+			applyUpto = maxLocal
+		}
+		for rf.lastAppliedIndex < applyUpto {
 			rf.lastAppliedIndex++
 			slog.Info("apply log", slog.Int("me", rf.me), slog.Int("index", rf.lastAppliedIndex), slog.Int("logsize", len(rf.log)))
 			msgs = append(msgs, raftapi.ApplyMsg{
@@ -430,6 +486,13 @@ func (rf *Raft) startElection() {
 	rf.CurrentTerm++
 	slog.Info("start election", slog.Int("me", rf.me))
 	//slog.Info("start election", slog.Int("node", rf.me), slog.Int("term", rf.CurrentTerm))
+
+	// 在锁保护下一次性捕获所有需要的状态
+	currentTerm := rf.CurrentTerm
+	//candidateId := rf.me
+	lastLogIndex := rf.lastLogIndex()
+	lastLogTerm := rf.lastLogTerm()
+
 	rf.mu.Unlock()
 	//向所有节点发送投票请求
 	for i := range rf.peers {
@@ -441,9 +504,9 @@ func (rf *Raft) startElection() {
 			rf.mu.Lock()
 			args := RequestVoteArgs{
 				CandidateId:  rf.me,
-				CurrentTerm:  rf.CurrentTerm,
-				LastLogIndex: rf.lastLogIndex(),
-				LastLogTerm:  rf.lastLogTerm(),
+				CurrentTerm:  currentTerm,
+				LastLogIndex: lastLogIndex,
+				LastLogTerm:  lastLogTerm,
 			}
 			reply := RequestVoteReply{}
 			rf.mu.Unlock()
@@ -462,7 +525,7 @@ func (rf *Raft) startElection() {
 					rf.VoteCount++
 					//slog.Info("got vote", slog.Int("node", rf.me), slog.Int("votes", rf.VoteCount), slog.Int("term", rf.CurrentTerm))
 					if rf.VoteCount > len(rf.peers)/2 && rf.State == Candidate {
-						slog.Info("become leader", slog.Int("startnode", rf.me), slog.Int("votes", rf.VoteCount), slog.Int("need votes", len(rf.peers)/2), slog.Int("term", rf.CurrentTerm))
+						slog.Info("become leader", slog.Int("startnode", rf.me), slog.Int("votes", rf.VoteCount), slog.Int("need votes", len(rf.peers)/2), slog.Int("term", currentTerm))
 						rf.State = Leader //票数过半成为leader
 						//init data
 						for i := range rf.nextIndex {
@@ -531,13 +594,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.VotedFor = -1
 
 	rf.applyCh = applyCh
-	rf.commitIndex = -1
+	rf.commitIndex = 0
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
 	for i := range rf.matchIndex {
-		rf.matchIndex[i] = -1
+		rf.matchIndex[i] = 0
 	}
-	rf.lastAppliedIndex = -1
+	rf.lastAppliedIndex = 0
 
 	rf.log = append(rf.log, LogEntry{
 		Term:    0,

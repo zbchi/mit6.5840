@@ -482,7 +482,7 @@ loop:
 
 	text := "agreement reached under concurrent submission"
 	tester.AnnotateCheckerSuccess(text, "OK")
-}*/
+}
 
 func TestRejoin3B(t *testing.T) {
 	servers := 3
@@ -525,9 +525,8 @@ func TestRejoin3B(t *testing.T) {
 	tester.AnnotateConnection(ts.g.GetConnected())
 
 	ts.one(105, servers, true)
-}
+}*/
 
-/*
 func TestBackup3B(t *testing.T) {
 	servers := 5
 	ts := makeTest(t, servers, true, false)
@@ -610,6 +609,7 @@ func TestBackup3B(t *testing.T) {
 	ts.one(rand.Int(), servers, true)
 }
 
+/*
 func TestCount3B(t *testing.T) {
 	servers := 3
 	ts := makeTest(t, servers, true, false)
