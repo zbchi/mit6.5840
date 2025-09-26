@@ -359,8 +359,8 @@ func TestFailNoAgree3B(t *testing.T) {
 
 	ts.one(1000, servers, true)
 }
-
-
+*/
+/*
 func TestConcurrentStarts3B(t *testing.T) {
 	servers := 3
 	ts := makeTest(t, servers, true, false)
@@ -483,7 +483,7 @@ loop:
 	text := "agreement reached under concurrent submission"
 	tester.AnnotateCheckerSuccess(text, "OK")
 }
-
+*/
 func TestRejoin3B(t *testing.T) {
 	servers := 3
 	ts := makeTest(t, servers, true, false)
@@ -525,7 +525,7 @@ func TestRejoin3B(t *testing.T) {
 	tester.AnnotateConnection(ts.g.GetConnected())
 
 	ts.one(105, servers, true)
-}*/
+}
 
 func TestBackup3B(t *testing.T) {
 	servers := 5

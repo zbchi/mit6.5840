@@ -43,6 +43,7 @@ type Raft struct {
 	lastAppliedIndex int
 	applyCh          chan raftapi.ApplyMsg
 
+	sync.Cond
 	// Your data here (3A, 3B, 3C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
@@ -172,12 +173,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.IsVote = false
 	}
 
-	slog.Info("election: vote",
-		slog.Int("candidate", args.CandidateId),
-		slog.Int("me", rf.me),
-		slog.Int("candidate_term", args.CurrentTerm),
-		slog.Int("my_term", rf.CurrentTerm),
-		slog.Bool("granted", reply.IsVote))
+	/*slog.Info("election: vote",
+	slog.Int("candidate", args.CandidateId),
+	slog.Int("me", rf.me),
+	slog.Int("candidate_term", args.CurrentTerm),
+	slog.Int("my_term", rf.CurrentTerm),
+	slog.Bool("granted", reply.IsVote))*/
 
 	//rf.lastHeartBeat = time.Now()
 
@@ -254,35 +255,54 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	if args.Term >= rf.CurrentTerm {
 		rf.State = Follower
-		rf.CurrentTerm = args.Term
-		rf.commitIndex = min(args.LeaderCommit, len(rf.log)-1)
+		//rf.CurrentTerm = args.Term
+
+		//-------------------
+		/*if args.PreLogIndex == 101 {
+			slog.Info("PreLogIndex 101", slog.Int("PreLogTerm", args.PreLogTerm), slog.Int("myLastLogTerm", rf.log[args.PreLogIndex].Term), slog.Int("commitIndex", rf.commitIndex), slog.Int("me", rf.me))
+		}*/
 
 		if args.PreLogIndex >= len(rf.log) { //节点不包含preLog
 			reply.IsSuccess = false
-			slog.Info("nextIndex not in", slog.Int("PreLogIndex", args.PreLogIndex), slog.Int("expected", len(rf.log)-1))
+			reply.ConflictIndex = len(rf.log)
+			slog.Info("nextIndex not in", slog.Int("PreLogIndex", args.PreLogIndex), slog.Int("expected", len(rf.log)-1), slog.Int("me", rf.me))
 			return
-		}
-		if args.PreLogTerm != rf.log[args.PreLogIndex].Term { //prelog Term不匹配，快速回退
+		} else if args.PreLogTerm != rf.log[args.PreLogIndex].Term { //prelog Term不匹配，快速回退
 			reply.IsSuccess = false
 			reply.ConflictTerm = rf.log[args.PreLogIndex].Term
-			for i := args.PreLogIndex; i >= 0; i-- {
-				if rf.log[i].Term != reply.ConflictTerm {
-					reply.ConflictIndex = i + 1
-					break
-				}
-			}
-			rf.log = rf.log[:reply.ConflictIndex] //term不匹配删除index之后的日志
 
-			//slog.Info("nextIndex not term", slog.Int("PreLogIndex", args.PreLogIndex), slog.Int("PreLogTerm", args.PreLogTerm), slog.Int("myLastLogTerm", rf.log[args.PreLogIndex].Term))
+			first := args.PreLogIndex
+			for first >= 0 && rf.log[first].Term == reply.ConflictTerm {
+				first--
+			}
+			reply.ConflictIndex = first + 1
+
+			//slog.Info("not term", slog.Int("logsize", len(rf.log)), slog.Int("preLogIndex", args.PreLogIndex))
+			slog.Info("nextIndex not term", slog.Int("PreLogIndex", args.PreLogIndex), slog.Int("PreLogTerm", args.PreLogTerm), slog.Int("myLastLogTerm", rf.log[args.PreLogIndex].Term))
+
+			rf.log = rf.log[:reply.ConflictIndex] //term不匹配删除index之后的日志
+			if rf.commitIndex >= len(rf.log) {
+				rf.commitIndex = len(rf.log) - 1
+			}
+
+			slog.Info("fast backup",
+				slog.Int("PreLogIndex", args.PreLogIndex),
+				slog.Int("PreLogTerm", args.PreLogTerm),
+				slog.Int("ConflictTerm", reply.ConflictTerm),
+				slog.Int("ConflictIndex", reply.ConflictIndex),
+				slog.Int("logsize_after_truncate", len(rf.log)),
+				slog.Int("me", rf.me))
 			return
+		}
+		if args.LeaderCommit > rf.commitIndex {
+			rf.commitIndex = min(args.LeaderCommit, len(rf.log)-1)
 		}
 
 		if len(args.Entries) > 0 {
-			rf.log = rf.log[:args.PreLogIndex+1]
-			rf.log = append(rf.log, args.Entries...)
-			slog.Info("node append log")
+			rf.log = append(rf.log[:args.PreLogIndex+1], args.Entries...)
+			//slog.Info("node append log")
 		}
-		slog.Info("update committedIndex", slog.Int("node", rf.me), slog.Int("value", rf.commitIndex))
+		//slog.Info("update committedIndex", slog.Int("node", rf.me), slog.Int("value", rf.commitIndex))
 		reply.IsSuccess = true
 		//slog.Info("heartBeat update", slog.Int("node", rf.me), slog.Int("leader", args.Leader), slog.Int("term", rf.CurrentTerm))
 
@@ -290,7 +310,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 }
 
 func (rf *Raft) heatBeatCheck() {
-	for !rf.killed() && rf.State == Leader {
+	for {
+		rf.mu.Lock()
+		if rf.killed() || rf.State != Leader {
+			rf.mu.Unlock()
+			return
+		}
+		rf.mu.Unlock()
 		for i := range rf.peers {
 			if i == rf.me {
 				continue
@@ -310,13 +336,13 @@ func (rf *Raft) heatBeatCheck() {
 						}
 						if count > len(rf.peers)/2 && rf.log[N].Term == rf.CurrentTerm {
 							rf.commitIndex = N
-							slog.Info("update committedIndex", slog.Int("node", rf.me), slog.Int("value", rf.commitIndex))
+							//slog.Info("update committedIndex", slog.Int("node", rf.me), slog.Int("value", rf.commitIndex))
 						}
 					}
 
 					//slog.Info("send log", slog.Int("nextIndex", rf.nextIndex[server]), slog.Int("node", server),
 					//	slog.Int("me", rf.me), slog.Int("myterm", rf.CurrentTerm))
-					sentIndex := len(rf.log) - 1
+					//sentIndex := len(rf.log) - 1
 					fromIndex := rf.nextIndex[server]
 					preLogIndex := fromIndex - 1
 					preLogTerm := rf.log[preLogIndex].Term
@@ -338,8 +364,8 @@ func (rf *Raft) heatBeatCheck() {
 						ConflictIndex: -1,
 					}
 
-					slog.Info("send log", slog.Int("from", fromIndex), slog.Int("to", sentIndex),
-						slog.Int("node", server), slog.Int("me", rf.me), slog.Int("myterm", rf.CurrentTerm), slog.Int("logsize", len(rf.log)))
+					//slog.Info("send log", slog.Int("from", fromIndex), slog.Int("to", sentIndex),
+					//	slog.Int("node", server), slog.Int("me", rf.me), slog.Int("myterm", rf.CurrentTerm), slog.Int("logsize", len(rf.log)))
 
 					ok := rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
 					rf.mu.Lock()
@@ -353,36 +379,46 @@ func (rf *Raft) heatBeatCheck() {
 						}
 						if reply.IsSuccess {
 							// 只有确实发送了 entries 才推进 nextIndex/matchIndex
-							slog.Info("send log ok", slog.Int("leader", rf.me), slog.Int("follower", server))
+							//slog.Info("send log ok", slog.Int("leader", rf.me), slog.Int("follower", server))
 							if len(entries) > 0 {
 								advancedTo := preLogIndex + len(entries)
+								if len(entries) == 0 {
+									advancedTo = preLogIndex
+								}
 								rf.matchIndex[server] = advancedTo
 								rf.nextIndex[server] = advancedTo + 1
 							}
 						}
 						if !reply.IsSuccess && reply.ConflictTerm != -1 { //有冲突任期
 							//leader有冲突任期
-							found := false
-							for i, logEntry := range rf.log {
-								if logEntry.Term == reply.ConflictTerm {
-									rf.nextIndex[server] = i + 1
-									found = true
+							found := -1
+							for i := len(rf.log) - 1; i >= 0; i-- {
+								if rf.log[i].Term == reply.ConflictTerm {
+									found = i
 									break
 								}
 							}
-							//没找到直接回退
-							if !found {
+							//没找到冲突任期
+							if found != -1 {
+								rf.nextIndex[server] = found + 1
+							} else {
 								rf.nextIndex[server] = reply.ConflictIndex
 							}
 
 						} else if !reply.IsSuccess { //无冲突任期
-							if rf.nextIndex[server] != 1 {
+							/*if rf.nextIndex[server] != 1 {
 								rf.nextIndex[server]--
-							}
-							slog.Warn("send log failed", slog.Int("node", server), slog.Int("me", rf.me))
+							}*/
+							rf.nextIndex[server] = max(reply.ConflictIndex, 0)
+							//slog.Warn("send log failed", slog.Int("node", server), slog.Int("me", rf.me))
 						}
+
+						if rf.matchIndex[server] >= rf.nextIndex[server] {
+							rf.matchIndex[server] = rf.nextIndex[server] - 1
+						}
+
 					} else if !ok {
-						slog.Warn("rpc timeout", slog.Int("leader", rf.me), slog.Int("follower", server))
+						//slog.Warn("rpc timeout", slog.Int("leader", rf.me), slog.Int("follower", server))
 					}
 					rf.mu.Unlock()
 				}
@@ -404,7 +440,8 @@ func (rf *Raft) applyLog() {
 		}
 		for rf.lastAppliedIndex < applyUpto {
 			rf.lastAppliedIndex++
-			slog.Info("apply log", slog.Int("me", rf.me), slog.Int("index", rf.lastAppliedIndex), slog.Int("logsize", len(rf.log)))
+
+			slog.Info("applyLog", slog.Int("index", rf.lastAppliedIndex), slog.Int("logTerm", rf.log[rf.lastAppliedIndex].Term), slog.Int("commitIndex", rf.commitIndex), slog.Int("logsize", len(rf.log)), slog.Int("me", rf.me))
 			msgs = append(msgs, raftapi.ApplyMsg{
 				CommandValid: true,
 				Command:      rf.log[rf.lastAppliedIndex].Command,
@@ -439,7 +476,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := false
 
 	// Your code here (3B).
-	slog.Info("start")
+	//slog.Info("start")
 
 	rf.mu.Lock()
 	term = rf.CurrentTerm
@@ -452,7 +489,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 				Index:   index,
 				Command: command,
 			})
-		slog.Info("append a log", slog.Int("index", index), slog.Int("logsize", len(rf.log)))
+		//slog.Info("append a log", slog.Int("index", index), slog.Int("logsize", len(rf.log)))
 	}
 	rf.mu.Unlock()
 	return index, term, isLeader
@@ -484,7 +521,7 @@ func (rf *Raft) startElection() {
 	rf.VoteCount = 1
 	rf.VotedFor = rf.me
 	rf.CurrentTerm++
-	slog.Info("start election", slog.Int("me", rf.me))
+	//slog.Info("start election", slog.Int("me", rf.me))
 	//slog.Info("start election", slog.Int("node", rf.me), slog.Int("term", rf.CurrentTerm))
 
 	// 在锁保护下一次性捕获所有需要的状态
@@ -501,7 +538,6 @@ func (rf *Raft) startElection() {
 		}
 
 		go func(server int) { //用routine防止rpc阻塞节点
-			rf.mu.Lock()
 			args := RequestVoteArgs{
 				CandidateId:  rf.me,
 				CurrentTerm:  currentTerm,
@@ -509,8 +545,6 @@ func (rf *Raft) startElection() {
 				LastLogTerm:  lastLogTerm,
 			}
 			reply := RequestVoteReply{}
-			rf.mu.Unlock()
-
 			ok := rf.sendRequestVote(server, &args, &reply)
 
 			rf.mu.Lock()
@@ -525,7 +559,7 @@ func (rf *Raft) startElection() {
 					rf.VoteCount++
 					//slog.Info("got vote", slog.Int("node", rf.me), slog.Int("votes", rf.VoteCount), slog.Int("term", rf.CurrentTerm))
 					if rf.VoteCount > len(rf.peers)/2 && rf.State == Candidate {
-						slog.Info("become leader", slog.Int("startnode", rf.me), slog.Int("votes", rf.VoteCount), slog.Int("need votes", len(rf.peers)/2), slog.Int("term", currentTerm))
+						slog.Info("become leader", slog.Int("startnode", rf.me), slog.Int("votes", rf.VoteCount), slog.Int("need votes", len(rf.peers)/2), slog.Int("term", currentTerm), slog.Int("nextIndex", len(rf.log)))
 						rf.State = Leader //票数过半成为leader
 						//init data
 						for i := range rf.nextIndex {
