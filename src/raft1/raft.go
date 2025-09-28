@@ -9,6 +9,7 @@ package raft
 import (
 	//	"bytes"
 
+	"bytes"
 	"log/slog"
 	"math/rand"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	//	"6.5840/labgob"
+	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/raftapi"
 	tester "6.5840/tester1"
@@ -43,7 +45,6 @@ type Raft struct {
 	lastAppliedIndex int
 	applyCh          chan raftapi.ApplyMsg
 
-	sync.Cond
 	// Your data here (3A, 3B, 3C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
@@ -94,6 +95,16 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// raftstate := w.Bytes()
 	// rf.persister.Save(raftstate, nil)
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.CurrentTerm)
+	e.Encode(rf.VotedFor)
+	e.Encode(rf.log)
+	data := w.Bytes()
+
+	rf.persister.Save(data, nil)
+
 }
 
 // restore previously persisted state.
@@ -160,6 +171,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.CurrentTerm = args.CurrentTerm
 		rf.State = Follower
 		rf.VotedFor = -1
+		rf.persist()
 	}
 	reply.Term = rf.CurrentTerm
 
@@ -183,7 +195,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	//rf.lastHeartBeat = time.Now()
 
 	if reply.IsVote {
-		rf.VotedFor = args.CandidateId
+		if rf.VotedFor != args.CandidateId {
+			rf.VotedFor = args.CandidateId
+			rf.persist()
+		}
 		// 刷新选举超时，避免多个候选人持续竞争
 		rf.lastHeartBeat = time.Now()
 		//rf.CurrentTerm = args.CurrentTerm
@@ -251,6 +266,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term > rf.CurrentTerm {
 		rf.CurrentTerm = args.Term
 		rf.VotedFor = -1
+		rf.persist()
 	}
 
 	if args.Term >= rf.CurrentTerm {
@@ -281,6 +297,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			slog.Info("nextIndex not term", slog.Int("PreLogIndex", args.PreLogIndex), slog.Int("PreLogTerm", args.PreLogTerm), slog.Int("myLastLogTerm", rf.log[args.PreLogIndex].Term))
 
 			rf.log = rf.log[:reply.ConflictIndex] //term不匹配删除index之后的日志
+			rf.persist()
 			if rf.commitIndex >= len(rf.log) {
 				rf.commitIndex = len(rf.log) - 1
 			}
@@ -300,6 +317,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		if len(args.Entries) > 0 {
 			rf.log = append(rf.log[:args.PreLogIndex+1], args.Entries...)
+			rf.persist()
 			//slog.Info("node append log")
 		}
 		//slog.Info("update committedIndex", slog.Int("node", rf.me), slog.Int("value", rf.commitIndex))
@@ -374,6 +392,7 @@ func (rf *Raft) heatBeatCheck() {
 							rf.CurrentTerm = reply.Term
 							rf.State = Follower
 							rf.VotedFor = -1
+							rf.persist()
 							rf.mu.Unlock()
 							return
 						}
@@ -489,6 +508,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 				Index:   index,
 				Command: command,
 			})
+		rf.persist()
 		//slog.Info("append a log", slog.Int("index", index), slog.Int("logsize", len(rf.log)))
 	}
 	rf.mu.Unlock()
@@ -521,6 +541,7 @@ func (rf *Raft) startElection() {
 	rf.VoteCount = 1
 	rf.VotedFor = rf.me
 	rf.CurrentTerm++
+	rf.persist()
 	//slog.Info("start election", slog.Int("me", rf.me))
 	//slog.Info("start election", slog.Int("node", rf.me), slog.Int("term", rf.CurrentTerm))
 
@@ -552,6 +573,7 @@ func (rf *Raft) startElection() {
 				if reply.Term > rf.CurrentTerm {
 					rf.State = Follower
 					rf.CurrentTerm = reply.Term
+					rf.persist()
 					rf.mu.Unlock()
 					return
 				}
@@ -626,6 +648,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.CurrentTerm = 0
 	rf.State = Follower
 	rf.VotedFor = -1
+	rf.persist()
 
 	rf.applyCh = applyCh
 	rf.commitIndex = 0

@@ -133,7 +133,6 @@ func TestManyElections3A(t *testing.T) {
 	ts.checkOneLeader()
 }
 
-/*
 func TestBasicAgree3B(t *testing.T) {
 	servers := 3
 	ts := makeTest(t, servers, true, false)
@@ -359,8 +358,7 @@ func TestFailNoAgree3B(t *testing.T) {
 
 	ts.one(1000, servers, true)
 }
-*/
-/*
+
 func TestConcurrentStarts3B(t *testing.T) {
 	servers := 3
 	ts := makeTest(t, servers, true, false)
@@ -483,7 +481,7 @@ loop:
 	text := "agreement reached under concurrent submission"
 	tester.AnnotateCheckerSuccess(text, "OK")
 }
-*/
+
 func TestRejoin3B(t *testing.T) {
 	servers := 3
 	ts := makeTest(t, servers, true, false)
@@ -609,7 +607,6 @@ func TestBackup3B(t *testing.T) {
 	ts.one(rand.Int(), servers, true)
 }
 
-/*
 func TestCount3B(t *testing.T) {
 	servers := 3
 	ts := makeTest(t, servers, true, false)
@@ -764,7 +761,7 @@ loop:
 		total3-total2, 3*20)
 	tester.AnnotateCheckerSuccess(
 		"used a reasonable number of RPCs in idle", details)
-}*/
+}
 
 func TestPersist13C(t *testing.T) {
 	servers := 3
