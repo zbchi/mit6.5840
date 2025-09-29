@@ -101,6 +101,7 @@ func (rf *Raft) persist() {
 	e.Encode(rf.CurrentTerm)
 	e.Encode(rf.VotedFor)
 	e.Encode(rf.log)
+
 	data := w.Bytes()
 
 	rf.persister.Save(data, nil)
@@ -112,6 +113,19 @@ func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm int
+	var votedFor int
+	var logEntries []LogEntry
+	if d.Decode(&currentTerm) != nil || d.Decode(&votedFor) != nil || d.Decode(&logEntries) != nil {
+		slog.Warn("Error")
+	} else {
+		rf.CurrentTerm = currentTerm
+		rf.VotedFor = votedFor
+		rf.log = logEntries
+	}
+
 	// Your code here (3C).
 	// Example:
 	// r := bytes.NewBuffer(data)
@@ -473,7 +487,7 @@ func (rf *Raft) applyLog() {
 		for _, msg := range msgs {
 			rf.applyCh <- msg
 		}
-		time.Sleep(1 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
@@ -648,7 +662,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.CurrentTerm = 0
 	rf.State = Follower
 	rf.VotedFor = -1
-	rf.persist()
 
 	rf.applyCh = applyCh
 	rf.commitIndex = 0
@@ -668,6 +681,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
+	rf.persist()
 	// start ticker goroutine to start elections
 	go rf.ticker()
 
