@@ -310,8 +310,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			//slog.Info("not term", slog.Int("logsize", len(rf.log)), slog.Int("preLogIndex", args.PreLogIndex))
 			slog.Info("nextIndex not term", slog.Int("PreLogIndex", args.PreLogIndex), slog.Int("PreLogTerm", args.PreLogTerm), slog.Int("myLastLogTerm", rf.log[args.PreLogIndex].Term))
 
-			rf.log = rf.log[:reply.ConflictIndex] //term不匹配删除index之后的日志
-			rf.persist()
+			//rf.log = rf.log[:reply.ConflictIndex] //term不匹配删除index之后的日志
+			//rf.persist()
 			if rf.commitIndex >= len(rf.log) {
 				rf.commitIndex = len(rf.log) - 1
 			}
@@ -438,11 +438,12 @@ func (rf *Raft) heatBeatCheck() {
 								rf.nextIndex[server] = reply.ConflictIndex
 							}
 
-						} else if !reply.IsSuccess { //无冲突任期
+						} else if !reply.IsSuccess && reply.ConflictIndex != -1 { //无冲突任期
 							/*if rf.nextIndex[server] != 1 {
 								rf.nextIndex[server]--
-							}*/
+							} */
 							rf.nextIndex[server] = max(reply.ConflictIndex, 0)
+							slog.Info("update nextIndex", slog.Int("value", rf.nextIndex[server]), slog.Int("conflictIndex", reply.ConflictIndex), slog.Int("node", server))
 							//slog.Warn("send log failed", slog.Int("node", server), slog.Int("me", rf.me))
 						}
 
